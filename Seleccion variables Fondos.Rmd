@@ -1,0 +1,77 @@
+---
+title: "Informe sobre Fondos de inversión"
+author: "Daniel Tomé Gordo"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+__INTRODUCCIÓN__
+
+Para realizar este se informe se facilita una base de datos con 500 fondos de inversión que incluye distintas características de estos fondos. Entre las variables se pueden encontrar desde variables numéricas como el rendimiento del fondo o las comisiones que tiene, hasta variables cualitativas como el rating del fondo o la sociedad que lo gestiona.
+A la hora de realizar un primer análisis exploratorio de los datos, se encuentran distintos campos en los que hay valores ausentes. Convirtiéndose en un primer impedimento para el objetivo, seleccionar las mejores variables para conseguir predecir la variable *rent_1*. Más tarde se discutirá con qué variables se trabajará y el tratamiento que se aplicará a los valores ausentes.
+
+```{r}
+read.csv("Datos/Fondos.csv", sep=";",dec = ",")->data
+summary(data)
+```
+
+__METODOLOGÍA__
+
+Para comprobar que variables son las mejores para predecir el la variable pretendida, se realizaráan diversos métodos de como el _backward_, _forward_ o el _both_. Cada método será explicado cuando se usen. En lo referente a los N/A, se eliminarán todas aquellas variables que tuviesen algún registro incompleto. Por otro lado, se eliminarán las variables cualitativas también.
+
+```{r}
+data1<-data[c(1,3,4,7:13,26:29)]
+modelo<-lm(rent_1~., data=data1)
+summary(modelo)
+```
+
+Para comprobar alguna hipótesis globales del modelo se pueden realizar diversos tests. Se observa un problema de multicolinealidad (VIF>2) en las variables de rendimiento (excepto en la de 1 día). Por otra parte, la no asunción del Global Stat refleja que existe una relación entre la variable dependiente *rent_1* y las independientes (también se ve la multicolinealidad aquí). La no asunción de Link Function muestra que existen otros métodos que pueden ser usados para este modelo. Por último, la asunción de la heterocedasticidad muestra que la varianza de los residuos no es constante en todo el modelo.
+
+```{r}
+library(gvlma)
+library(car)
+gvmodel <- gvlma(modelo) 
+summary(gvmodel)
+vif(modelo)
+```
+
+__SELECCION DE MODELOS__
+
+Entre los distintos modelos a usar, se pueden destacar:
+
+ - El del mejor subconjunto. Con este método se eligen los mejores subconjuntos de variables que consiguen explicar la variable *rent_1*. Como criterio para la selección del modelo se realiza por aquel que tenga un menor BIC. En este caso se trata del modelo que posee 4 variables, que es el compuesto por: X1_Week_Return, rent_6_meses, rent_en_el_anio y Com_Gestion
+ 
+```{r}
+library (leaps)
+reg.full.best=regsubsets(rent_1~.,data1)
+reg.best.summary=summary(reg.full.best)
+reg.best.summary
+reg.best.summary$bic
+```
+ 
+ - El método _forward stepwise_: empezar el modelo con ninguna variable e ir añadiendo una a una. Se usará el AIC para dictaminar qué modelo es mejor. LAs variables que componen este modelo son: rent_en_el_anio, rent_6_meses, Com_Gestion, X1_Week_Return, Com_deposito y ImportFile_CustomDelayToBuy. El AIC de este modelo es de 307.12
+ 
+```{r}
+library(MASS)
+modelo_nulo=lm(rent_1~1, data=data1)
+stepAIC(modelo_nulo, scope=list(lower=modelo_nulo, upper=modelo),direction="forward")
+```
+ 
+
+ - El método _backward stepwise_: comenzando el modelo con todas las variables e ir        eliminando las menos significantes. Como criterio para este método se usará el modelo que tenga un menor AIC. De esta manera, el modelo resultante es el compuesto por:           X1_Week_Return, Com_deposito, rent_3_meses, rent_1_mes, Com_Gestion, rent_6_meses,         rent_en_el_anio. El AIC resultante es de 302.46
+ 
+```{r}
+library(MASS)
+stepAIC(modelo, direction="backward")
+```
+
+- Algún modelo mixto. El criterio para este modelo será, igual que para los 3 anteriores el AIC. En este caso resulta el mismo modelo que en el caso del método *backward*
+
+```{r}
+library(MASS)
+stepAIC(modelo, direction="both")
+```
+
+De esta manera, seleccionan mejor las variables a usar los métodos **backward** y **both**.
