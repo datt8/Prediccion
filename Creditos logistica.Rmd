@@ -1,0 +1,355 @@
+---
+title: "¿Qué variables se deben estudiar en la concesión de un préstamo?"
+author: "Daniel Tomé Gordo"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+#INTRODUCCIÓN
+
+Para una entidad crediticia el hecho de dar un crédito o no darlo es una de las decisiones más importantes que deben tomar en el día a día. Si deciden dar un crédito, y este no le es devuelto se originarán unos costes con los que el banco tendrá que correr. Sin embargo, si el banco no decide dar el crédito, estará perdiendo unos potenciales ingresos derivados de ellos. Por este motivo, se decide trabajar con una base de datos de préstamos, donde se intentará ver cuáles son los factores más relevantes a la hora de la concesión de los préstamos, para posteriormente intentar crear un modelo que permita predecir si el préstamo será devuelto o no.
+
+#TRATAMIENTO DE LOS DATOS
+
+En este caso se deberá enfrentar a una base de datos con numerosos registros de acerca de los préstamos. Esta base deberá ser depurada de alguna forma para convertir estos datos en una muestra manejable en términos de tiempo y computación, ya que las herramientas técnicas con las que se cuentan no tienen la capacidad necesaria para trabajar con toda la base. Tras realizar un breve análisis exploratorio de los datos, se puede observar que hay cientos de variables, y algunas cuya información podría estar duplicada. También, se ve como hay ciertas variables que tienen un gran número de valores perdidos por lo que se deberá hacer algo con ellos. Además hay variables que muesran información totalmente despreciable pues no tiene gran relevancia informativa.
+
+```{r include=FALSE}
+read.csv("Datos/LoanStats_2016Q3.csv",header=TRUE, sep=",",skip = 1, dec = ".")->datos
+summary(datos)
+```
+
+Para limpiar esos datos, primeramente, se decide crear una función que ayude a detectar aquellas variables con un número considerable (se decide 500) de valores perdidos y posteriormente se eliminan registros que tienen también valores perdidos, para poder trabajar con una base de datos completa. Se ve que la pérdida es asumible pues se pierden 16 variables y 8 regsitros. 
+Posteriormente, para depurar todavía más la base se decide estudiar las variables y dejar aquellas que se consideran más relevantes. Finalmente, se llega a una muestra de 16 variables y los 99.114 registros iniciales.
+
+```{r message=FALSE}
+elimina<-c(0)
+contar<-function(x){
+  sum(is.na(x))
+} 
+
+for (i in 1:length(datos)){
+  nas<-contar(datos[,i])
+  if (nas >500) elimina[i]=1
+  else elimina [i]=0
+}
+
+datos.v1 <- datos[,elimina==0]
+datos.v2<-na.omit(datos.v1)
+library(dplyr)
+datos.v2<- mutate(datos.v2, loan=if_else(datos.v2$loan_status=='Current' | 
+                                           datos.v2$loan_status=='Fully Paid', 0,1))
+datos.v3<-datos.v2[c(3,6,8,9,12,14,16,22,25,29,31,33,35,37,50,96)]
+```
+
+Sin embargo, sigue habiendo problemas. La variable que se quiere usar como dependiente tiene más de dos factores, por lo que habrá que renombrar sus campos; y por otro lado hay un claro desbalanceo en la muestra. Existen únicamente 554 registros que puedan ser considerados como morosos, por lo tanto se procederá a considerar el *default* como aquellos que han fallado un pago. De esta manera el número de préstamos en _default_ aumenta hasta, aproximadamente, 1.300 registros. También se corregirá algunos campos vacíos que hay en el título del préstamo.
+
+```{r warning=FALSE}
+library(dplyr)
+datos.v3$loan<-as.factor(datos.v3$loan)
+datos.def<-filter(datos.v3, title!="")
+summary(datos.def$title)
+```
+
+##EL MODELO LOGÍSTICO DE PREDICCIÓN
+
+Para todo modelo predictivo hay que realizar primero una separación de la muestra en dos partes, una de entrenamiento y otra de validación. En este caso se decide hacer una proporción 3:1 a favor de la muestra de entrenamiento y comprobar el balanceo de ambos conjuntos.
+
+```{r}
+set.seed(8)
+muestra<-sample(nrow(datos.def), nrow(datos.def)*0.75)
+entreno<-datos.def[muestra,]
+test<-datos.def[-muestra,]
+summary(entreno$loan)
+summary(test$loan)
+```
+
+Se crean dos modelos para la posterior selección de variables en las que se querrá comprobar cuáles son las mejores variables para estimar el estado del préstamo.
+
+```{r warning=FALSE}
+mod01<-glm(loan~., data=entreno, family ="binomial")
+mod02<-glm(loan~1, data=entreno, family ="binomial")
+```
+
+A la hora de la selección de variables se realizan tres métodos que irán quitando _backward_, añadiendo _forward_, o las dos cosas alternativamente _both_ hasta dar con el modelo óptimo.
+
+```{r warning=FALSE}
+library(MASS)
+stepAIC(mod02, scope=list(lower=mod02, upper=mod01),direction="forward")
+stepAIC(mod01, direction="backward")
+stepAIC(mod01, direction="both")
+```
+
+Se puede observar una ínfima diferencia entre los distintos modelos, pero aunque el criterio a seguir era el del menor AIC, se decide usar las variables seleccionadas en el método _forward_ pues con menos variables el cambio es pequeñísismo. De esta manera, quedan fuera del modelo definitivo las variables total_acc, annual_inc, open_acc y emp_length.
+
+```{r warning=FALSE}
+mod03<-glm(loan~grade+total_pymnt+installment+issue_d+out_prncp+loan_amnt+term+application_type+dti+revol_bal+title, data=entreno, family = "binomial")
+summary(mod03)
+```
+
+En el resumen se observa como casi todas las variables escogidas son relevantes, dejando como únicas no relevantes a las que corresponden al fin del préstamo. 
+Cabe destacar que al tratarse algunas variables de factores, la interpretación del coeficiente es la diferencia entre ese grado de la variable y el grado omitido de la variable. Por ejemplo, en el caso del _rating_ del préstamo el grado omitido ha sido el Grado A, por lo que todos los demás Grados serán la diferencia entre el Grado X y el Grado A. Tomando como ejemplo _gradeB_ la diferencia entre un préstamo de Grado A y otro de Grado B será $e^{-1.35}-1$.
+Tras lo visto con este modelo, y para una mayor simplicidad, se cogerán únicamente las variables relevantes (aquellas que tienen 3 estrellas) para el modelo definitibo a trabajar
+
+```{r warning=FALSE}
+mod.def<-glm(loan~grade+total_pymnt+installment+issue_d+out_prncp+loan_amnt+term,
+             data=entreno, family = "binomial")
+summary(mod.def)
+```
+
+##CLASIFICACIÓN DE LOS PRÉSTAMOS
+
+Una vez que se tiene el modelo, se deberá crear una regla de decisión que apoye la concesión o no de los préstamos. Para ello, lo primero será realizar una primera aproximación gráfica para ver cuál es el punto de corte. Como se observa no es nada definitoria pues, al estar la muestra claramente desbalanceada hacia los que no cometen default, la mayoría de las predicciones se situan en el 0 (no default).
+
+```{r}
+hist(predict(mod.def,type="response"))
+```
+
+Basándose en el gráfico se decide realizar una prueba. ¿Cuántos préstamos estarían bien clasificados si se considerase que con una probabilidad mayor de 0,02 ya serían candidatos a default? Como se ve en la matriz de confusión habría un nivel de acierto del 83,68% (suma de la diagonal principal dividida del total de observaciones). Que para la muestra que se tiene, no estaría nada mal
+```{r}
+prob.mod.def.train <- predict(mod.def,type="response")
+pred.mod.def.train<-as.numeric(prob.mod.def.train > 0.02)
+table(entreno$loan, pred.mod.def.train, dnn=c("Realidad","Predicho"))
+```
+
+Aunque para ser más precisos se usará la tecnología y algoritmos existentes para hallar cuál sería el valor óptimo para considerar la concesión o no del préstamo. Para empezar se crea una matriz de 100 filas por 2 columnas donde se guardará el corte usado y su posterior coste en términos de dar o no dar el crédito.
+Se observa que el corte óptimo será en 0,129, aunque en el gráfico es muy difuso pues a partir de 0,10 los puntos parecen totalmente paralelos al eje x
+
+```{r}
+searchgrid<-seq(0.001, 0.2, 0.001)
+result<-cbind(searchgrid, NA)
+cost1 <- function(r, pi){
+  peso1 = 5 #peso dar crédito y default
+  peso2 = 1 #peso no dar crédito y pagar
+  c1 = (r==1)&(pi<pcut)
+  c0 = (r==0)&(pi>pcut)
+  return(mean(peso1*c1+peso2*c0))
+}
+for(i in 1:length(searchgrid))
+{
+  pcut <- result[i,1]
+  result[i,2] <- cost1(entreno$loan, prob.mod.def.train)
+}
+result[which.min(result[,2]),]
+plot(result, ylab="CV Cost")
+```
+
+La matriz de confusión resultante de haber cogido ese corte será esta. Dando un nivel de acierto mucho más superior, en el entorno del 98,24%. Aún así tiene un pequeño contra respecto a la anterior, los default en la realidad son predichos de una peor manera con este corte (764 vs. 297)
+
+```{r}
+pred2.mod.def.train<-as.numeric(prob.mod.def.train > 0.129)
+table(entreno$loan, pred2.mod.def.train, dnn=c("Realidad","Predicho"))
+```
+
+###¿ES NECESARIA UNA REGULARIZACIÓN?
+
+Entre los distintos métodos por los cuales se debe realizar una regularización de las variables de los modelos se pueden destacar varios, pero uno de los más importantes es la multicolinealidad existente entre las variables. Con los datos existentes, no se puede garantizar la multicolinealidad entre algunas de las variables, por lo que no se puede dar un ejemplo concreto y rotundo sobre ella.
+Sin embargo, la regularización también es importante a la hora de modelizar. Un modelo que tenga un ajuste muy bueno, tendrá un sesgo mínimo (lo que es importante en el modelo), pero a costa de una mayor complejidad de este. Por lo tanto, se deberá buscar un equilibrio entre el sesgo y la varianza que el modelo tenga en aras de conseguir lo que se busca en los modelos: buen ajuste y generalización.
+
+#### Modelos de regularización
+
+Entre los modelos de contracción de las variables usados para regular uno de los más usados son los modelos Ridge y los modelos Lasso. Estos modelos como variante de los modelos de contracción buscan reducir la significancia de los coeficientes buscando que los coeficientes de las variables del modelo tiendan a cero para conseguir una reducción de la varianza. Los modelos Ridge en concreto buscan que los coeficientes tiendan a cero, pero sin llegar en ningún caso a eliminarlos del modelo. Opuestamente, los modelos Lasso buscan la insignificancia de los coeficientes, llegando a eliminarlos del modelo.
+Para llevar a cabo estos modelos es necesaria la creación de muestra de entrenamiento y test de la base de datos usada.
+
+```{r warning=FALSE}
+reg_train_x <- model.matrix(loan ~ ., data=entreno)[, -1]
+reg_train_y <- log(as.numeric(entreno$loan))
+
+reg_test_x <- model.matrix(loan ~ ., data=test)[, -1]
+reg_test_y <- log(as.numeric(test$loan))
+```
+
+Para realizar un modelo ridge vale con que el parámetro alpha de la función `glmnet::glmnet` tome el valor 0. Mientras que si toma el valor 1, estará realizando un modelo Lasso. Cualquier valor entre medias de ambos, dará lugar a un modelo Elastic Net.
+
+##### Modelos ridge
+
+```{r}
+library(glmnet)
+mod_ridge <- glmnet(x = reg_train_x, y = reg_train_y, alpha = 0)
+plot(mod_ridge, xvar = "lambda")
+```
+
+Para escoger el $\lambda$ adecuado se debe incluir la validación cruzada en el modelo. En el gráfico resultante se podrán ver dos líneas discontinuas que simbolizan el menor error del modelo y el óptimo a elegir. Aunque en este caso, se tendrá un problema, pues la primera línea simboliza el *****inicio del modelo con todas las variables***** y la segunda el final *****con ninguna variable*****. En el gráfico parece que el intervalo de confianza es muy grande, pero no es así en ningún caso. El eje _y_ tiene sólo un recorrido de 4 milésimas, por lo que la elección de un $\lambda$ u otro se convierte en una cuestión casi irrelevante.
+
+```{r}
+mod_ridge.cv <- cv.glmnet(x = reg_train_x, y = reg_train_y, alpha = 0)
+plot(mod_ridge.cv)
+```
+
+Teóricamente, el lambda a elegir será el resultante de sumar una desviación típica al error cuadrático medio, pero en este caso es tan mínima la suma que numéricamente el resultado es 0.
+
+```{r}
+min(mod_ridge.cv$cvm) 
+mod_ridge.cv$lambda.min 
+mod_ridge.cv$cvm[mod_ridge$lambda == mod_ridge$lambda.1se] 
+mod_ridge.cv$lambda.1se  
+```
+
+```{r}
+plot(mod_ridge, xvar = "lambda")
+abline(v = log(mod_ridge.cv$lambda.1se), col = "red", lty = "dashed")
+```
+
+Como se observa en el gráfico si se escogiese la teórica $\lambda$ el modelo usado se quedaría sin variables, por lo que se tendrá que rechazar la esta idea. De esta manera, si el modelo de regularización elegido fuese un modelo _ridge_ se debería elegir el mínimo $\lambda$.
+Aún usando el $\lambda$ mínimo los coeficientes son muy pequeños. Aunque es lógico teniendo la muestra explicada anteriormente con un 98% de no defaults.
+
+```{r warning=FALSE}
+library(broom)
+library(ggplot2)
+coef(mod_ridge.cv, s = "lambda.min") %>%
+  tidy() %>%
+  filter(row != "(Intercept)") %>%
+  top_n(5, wt = abs(value)) %>%
+  ggplot(aes(value, reorder(row, value))) +
+  geom_point() +
+  ggtitle("Top 5 influential variables") +
+  xlab("Coefficient") +
+  ylab(NULL)
+```
+
+##### Modelos Lasso
+
+Para los modelos Lasso se seguirá el mismo procedimiento que se ha realizado con los ridge. Primero se creara un modelo sin validación cruzada
+```{r}
+mod_lasso <- glmnet(x = reg_train_x, y = reg_train_y, alpha = 1)
+plot(mod_lasso)
+```
+
+Para luego encontrar el $\lambda$ óptimo con la validación cruzada
+
+```{r}
+mod_lasso.cv<-cv.glmnet(x=reg_train_x, y=reg_train_y, alpha=1)
+plot(mod_lasso.cv)
+```
+
+En este caso el lambda que minimiza el error y el óptimo no son tan radicales como en el caso de los modelo ridge.
+
+```{r}
+min(mod_lasso.cv$cvm) 
+mod_lasso.cv$lambda.min 
+mod_lasso.cv$cvm[mod_lasso$lambda == mod_lasso.cv$lambda.1se] 
+mod_lasso.cv$lambda.1se 
+```
+
+```{r}
+plot(mod_lasso, xvar = "lambda")
+abline(v = log(mod_lasso.cv$lambda.1se), col = "red", lty = "dashed")
+```
+
+En este caso se observa que con el $\lambda$ óptimo las variables se encontrarán entre las 12-15 (aunque no hay 15 variables se debe contar una variable por cada clase de los factores).
+
+```{r}
+coef(mod_lasso.cv, s = "lambda.1se") %>%
+  tidy() %>%
+  filter(row != "(Intercept)") %>%
+  ggplot(aes(value, reorder(row, value), color = value > 0)) +
+  geom_point(show.legend = FALSE) +
+  ggtitle("Influential variables") +
+  xlab("Coefficient") +
+  ylab(NULL)
+```
+
+En el gráfico que se encuentra encima se puede observar la gran cantidad de factores aproximados a 0 (pero sin ser eliminados) y como los más relevantes, tanto positivos como negativos, son los rating de los préstamos
+
+######¿Qué modelo es mejor?
+
+```{r}
+min(mod_ridge.cv$cvm) 
+min(mod_lasso.cv$cvm) 
+```
+
+Por una diferencia muy pequeña, de estos dos modelos tiene un menor error el modelo Lasso. Siendo también el mejor modelo en cuanto a reducción de variables.
+
+##### Elastic Net
+
+Se crean 4 modelos con distintos $\alpha$ para ver la evolución de ellos y luego ver sus difencias más claramente de manera visual.
+
+```{r}
+lasso    <- glmnet(reg_train_x, reg_train_y, alpha = 1.0) 
+elastic1 <- glmnet(reg_train_x, reg_train_y, alpha = 0.25) 
+elastic2 <- glmnet(reg_train_x, reg_train_y, alpha = 0.75) 
+ridge    <- glmnet(reg_train_x, reg_train_y, alpha = 0.0)
+
+par(mfrow = c(2, 2), mar = c(6, 4, 6, 2) + 0.1)
+plot(lasso, xvar = "lambda", main = "Lasso (Alpha = 1)\n\n\n")
+plot(elastic2, xvar = "lambda", main = "Elastic Net (Alpha = .75)\n\n\n")
+plot(elastic1, xvar = "lambda", main = "Elastic Net (Alpha = .25)\n\n\n")
+plot(ridge, xvar = "lambda", main = "Ridge (Alpha = 0)\n\n\n")
+```
+
+Para hallar los mejores $\alpha$ y $\lambda$ para el modelo Elastic Net que se quiere construir lo primero en crear una muestra de iteraciones que se repita durante la búsqueda de estos dos parámetros para luego crear una tabla en la que se colocarán los errores mínimos y una desviación típica más (igual que en los anteriores modelos) y los $\lambda$ correspondientes.
+
+```{r}
+library(tibble)
+fold_id <- sample(1:10, size = length(reg_train_y), replace=TRUE)
+tabla_optimos<- tibble(alpha = seq(0, 1, by = .1), err_min = NA, err_1se = NA, lambda_min = NA, lambda_1se = NA)
+
+for(i in seq_along(tabla_optimos$alpha)) {
+  fit <- cv.glmnet(reg_train_x, reg_train_y, alpha = tabla_optimos$alpha[i], foldid = fold_id)
+  tabla_optimos$err_min[i]    <- fit$cvm[fit$lambda == fit$lambda.min]
+  tabla_optimos$err_1se[i]    <- fit$cvm[fit$lambda == fit$lambda.1se]
+  tabla_optimos$lambda_min[i] <- fit$lambda.min
+  tabla_optimos$lambda_1se[i] <- fit$lambda.1se
+}
+tabla_optimos
+```
+
+Para verlo de una forma mucho más visual, se realizará un gráfico en el que se mostrará con una linea la evolución del error mínimo y en la zona sombreada el intervalo en torno a este con una deviación típica. Se ve como a partir de un $\alpha$ sobre 0,35-0,375 será el $\•alpha$ óptimo que minimiza el error cuadrático medio
+
+```{r}
+tabla_optimos %>%
+  mutate(dt = err_1se - err_min) %>%
+  ggplot(aes(alpha, err_min)) +
+  geom_line(size = 2) +
+  geom_ribbon(aes(ymax = err_min + dt, ymin = err_min - dt), alpha = .25) +
+  ggtitle("Error mínimo ± una desviación típica")
+```
+
+#### PREDICCIÓN
+
+```{r}
+prediccion <- predict(mod_lasso.cv, s = mod_lasso.cv$lambda.min, reg_test_x)
+mean((reg_test_y - prediccion)^2)
+```
+
+# MODELOS NO LINEALES
+
+El uso de los modelos no lineales está cogiendo cada vez más auge pues en muchos casos la aproximación lineal no es la mejor para la aproximación. Para resolver este problema y realizar modelos no lineales, existen diversos métodos:
+* Regresiones polinomiales: se consigue ampliar el modelo mediante la introducción de nuevos predictores que son los antiguos predictores elevados a una potencia.
+* Funciones de paso: cortan en n partes una función, consiguiendo que la resultante parezca una función constante a trozos
+* Splines de regresión: se trata de una mezcla entre los dos métodos anteriores pues se divide la función en n partes y cada parte se ajusta a una regresión polinomial concreta.
+* Splines locales y suavizados: se trata de splines similares a los de regresión, en el caso de los locales las partes se pueden superponer y los suavizados se consiguen al minimizar suma de cuadrados residual
+* Modelos aditivos generalizados (GAM): que permiten extender los modelos anteriores para tratar múltiples predictores.
+
+Para realizar algún ejemplo sobre este tipo de modelos, se ha decidido que se va a intentar explicar la cuota que se paga de préstamo según el tipo de interés que tenga el préstamo. Se creará en un inicio un modelo lineal simple entre estas dos variables. Para la realización del modelo se dividirá la muestra en dos partes, como antes, 
+
+```{r}
+datos.mod.nl<-na.omit(datos[,c(3,8)])
+```
+
+```{r}
+mod.nl<-lm(loan_amnt~installment, data=datos.mod.nl)
+```
+
+##### Modelos polinomiales
+Para ver que modelo polinomial sería el mejor a usar para este caso se va a realizar un test anova en el que veremos la siginificatividad de los modelos polinomiales desde el orden 1 hasta el orden 5. Como se extrae del test ANOVA, el modelo más significativo es el de orden polinomial 2.
+
+```{r}
+mod.nl.1=lm(loan_amnt~installment, data=datos.mod.nl)
+mod.nl.2=lm(loan_amnt~poly(installment,2),data=datos.mod.nl)
+mod.nl.3=lm(loan_amnt~poly(installment,3),data=datos.mod.nl)
+mod.nl.4=lm(loan_amnt~poly(installment,4),data=datos.mod.nl)
+mod.nl.5=lm(loan_amnt~poly(installment,5),data=datos.mod.nl)
+
+anova(mod.nl.1, mod.nl.2, mod.nl.3, mod.nl.4, mod.nl.5)
+```
+
+##### Funciones de paso
+
+A la hora de realizar este tipo de regresión no lineal, se deciden al igual que en el caso anterior, realizar un corte en el modelo. De tal manera, la función tendrá 2 trozos. El corte estará en una cuota de 783 u.m.
+
+```{r}
+step.mod <- lm(loan_amnt~cut(installment, 2), data=datos.mod.nl)
+coef(summary(step.mod))
+```
