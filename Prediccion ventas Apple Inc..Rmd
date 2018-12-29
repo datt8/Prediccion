@@ -1,0 +1,403 @@
+---
+title: "Predicción de las ventas de Apple Inc."
+author: "Daniel Tomé Gordo"
+date: ' 22 de noviembre de 2018'
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document:
+    df_print: paged
+---
+
+#### Introducción
+
+En este informe se pretende intentar predecir las ventas que tendrá Apple Inc.. Para ello, se usarán dos diferentes tipos de modelos predictivos que trabajan con series temporales, los modelos ETS y los modelos ARIMA. Se realizará tanto para las ventas individuales de cada producto, como para las ventas totales de la compañía
+
++ Los **modelos ETS**  que dividen el comportamiento de la serie temporal en tres componentes: la tendencia, la estacionalidad y el componente de error que se comete.
+
++ Los **modelos ARIMA**: estos modelos se caracterizan por tres parámetros (p,d,q), siendo _p_ el número de retardos que se ven correlacionados con el momento actual; _d_ el número de períodos para que la serie pase de no estacionaria a estacionaria; y _q_ el número de retardos en los que los errores influyen en el modelo. Estos modelos se pueden ver complementados con un componente estacional (de periocidad _s_) necesario cuando la serie a predecir es estacional.
+
+# Modelo agregado
+
+#### Datos
+
+Para la elaboración de este informe se tenían de antemano las ventas trimestrales de la compañía desde el último trimestre del año 1998 hasta la del primer trimestre del 2016, para sus cuatro principales productos en los últimos 20 años: el iPod, el iPhone, el iPad y el Mac. Para completar y actualizar los datos se han buscado en los informes de la _Securities and Exchange Commission_ correspondientes a la compañía el número de unidades vendidas en estos últimos 10 trimestres.
+Para la elaboración del posterior modelo predictivo y para homogeneizar las ventas, se elaborará la predicción sobre los datos agregados de Apple, ya que durante todo el período estudiado no fueron vendidos todos los productos. Por ejemplo, el iPod no se vende desde el año 2014 o el iPad fue sacado en 2010.
+Para "limpiar" los datos hay que rellenar todos los datos ausentes con el valor 0, para poder calcular el agregado; y por otro lado, pasar a formato fecha la primera columna que en la carga original es considerada como un factor.
+
+```{r include = FALSE}
+read.csv("Datos/apple.csv", header = TRUE, sep = ";") -> datos
+datos[is.na(datos)] <- 0
+datos$Total <- datos$iPhone + datos$iPad + datos$iPod + datos$Mac
+as.Date(datos$Time, "%d/%m/%Y") -> datos$Time
+```
+
+Para trabajar mejor, se extrae la columna _Total_ que será la que se use para la predicción y se transforma a formato _zoo_. 
+
+```{r include = FALSE}
+library(zoo)
+library(xts)
+datos.xts <- to.quarterly(xts(datos$Total, order.by = datos$Time, frequency = 4))
+datos.zoo <- as.zoo(datos.xts$`xts(datos$Total, order.by = datos$Time, frequency = 4).Open`)
+names(datos.zoo) <- "Ventas Globales" # Se cambia el nombre por estética
+```
+
+Para ver visualmente la evolución de las ventas de Apple se realizará un gráfico con los datos anteriormente hallados. En el gráfico se ve claramente como durante la segunda mitad de la década de los 2000 hasta el año 2012, más o menos, se produce una rápida y gran expansión en las ventas de la compañía. Esta evolución puede ser explicada por los nuevos lanzamientos (iPhone y iPad) y el gran auge del iPhone como _smartphone_ de referencia. A partir del año 2012, se observa un claro estancamiento de las ventas (de hecho el iPod se retira del mercado). Durante toda la muestra el componente estacional existe, aunque en los primeros años es casi inapreciable.
+
+```{r warning = FALSE}
+library(ggplot2)
+library(ggfortify)
+autoplot(datos.zoo) + ggtitle("Ventas Trimestrales Apple Inc.") + 
+  xlab("Trimestres") + ylab("Ventas")
+
+ggfreqplot(as.ts(datos.zoo), nrow = 1, facet.labeller = c("4T","1T","2T","3T")) + ggtitle("Ventas Trimestrales")
+```
+
+En el gráfico superior se percibe claramente como el cuarto trimestre es el período en el que más ventas tiene la compañía, coincidiendo con el período navideño donde sus productos suelen estar siempre entre los más vendidos. Los otros tres trimestres tienen ventas similares, algo superiores en el primer trimestre quizá provocado por los regalos navideños retrasados.
+
+Se crea la muestra que se usará para el entrenamiento de la predicción
+
+```{r include = FALSE}
+periodos.omit <- 7
+observaciones <- length(datos.zoo)
+muestra.pred <- window(datos.zoo, start = index(datos.zoo[1]), end = index(datos.zoo[observaciones - periodos.omit]))
+```
+
+
+#### Modelos ETS
+
+Como se ha observado el componente estacional de la muestra se hallarán los modelos predictivos que tengan en cuenta ya dicho componente, los llamados de Holt-Winters
+
+```{r warning = FALSE}
+library(forecast)
+mod01 <- hw(muestra.pred, seasonal = "additive")
+mod02 <- hw(muestra.pred, seasonal = "multiplicative")
+
+plot(mod01,ylab = "Ventas", type = "o", fcol = "white", xlab = "Year")
+lines(window(datos.zoo),type = "o", col = "blue")
+lines(fitted(mod01), col = "red", lty = 2)
+lines(fitted(mod02), col = "green", lty = 2)
+lines(mod01$mean, type = "o", col = "red")
+lines(mod02$mean, type = "o", col = "green")
+legend("topleft",lty = 1, pch = 1, col = 1:3, 
+       c("data","Holt Winters' Aditivo","Holt Winters' Multiplicativo"))
+```
+
+El modelo aditivo tiene alguna oscilación al principio de la muestra, provocada, supuestamente, por la estacionalidad de la muestra. A lo largo de esta, ambos modelos siguen en gran medida los datos reales, por lo que se podría usar cualquiera para la predicción de las ventas futuras.
+
+En cuanto a los tres componentes anteriormente descritos de los modelos ETS, el más importante en cuanto a los gráficos generados es el de la estacionalidad. Esta se observa en gran medida a partir de los años 2005-2006, que es la fecha en la que el iPhone se saca al mercado. Contribuyendo a la creación de esta con su lanzamiento.
+
+```{r}
+estados <- cbind(mod01$model$states[,1:3],mod02$model$states[,1:3])
+colnames(estados) <- c("evolución","tendencia","estacionalidad","evolución","tendencia","estacionalidad")
+plot(estados, xlab = "Años")
+```
+
+Lo siguiente será automatizar la elección del mejor modelo ETS que consiga predecir la siguiente cifra de ventas de la compañía. Como se ve en el resumen del modelo predicho, el error y la estacionalidad son multiplicativos y la tendencia aditiva amortiguada. La predicción es bastante buena, pues aunque clava el pico de las ventas, los otros tres meses sobrestima las ventas.
+
+```{r warning=FALSE}
+mod.ets <- ets(muestra.pred, damped = TRUE)
+ventas.pred.ets <- forecast(mod.ets)
+summary(ventas.pred.ets)
+
+plot(ventas.pred.ets)
+lines(window(datos.zoo),type = "o")
+```
+
+#### Modelos ARIMA
+
+Para asegurar que la muestra es estacionaria en varianza se transformarán logarítmicamente las ventas.  En la diferenciación se ve claramente la estacionalidad de las ventas de la compañía.
+```{r warning=FALSE}
+ventas.zoo.log <- log(datos.zoo)
+ggtsdisplay(diff(ventas.zoo.log))
+```
+
+Estimando el modelo ARIMA se observa que será del modo (1,0,0) (0,1,1) [4]. Esto quiere decir que la variación depende del período justamente anterior y del error que se cometió 4 períodos atrás, es decir, del cometido hace 1 año. Por otro lado, también se muestran los residuos del modelo. 
+A la vista del test de Box Jenkins, podría rechazarse la hipótesis nula, por lo que existiría correlación entre los residuos (no cumpliendo estos la hipótesis del ruido). De esta manera, el modelo no sería óptimo, a pesar de que en el gráfico de residuos se aceptase la hipótesis del ruido blanco.
+
+```{r}
+mod.arima <- auto.arima(muestra.pred, lambda = 0)
+summary(mod.arima)
+ggtsdisplay(mod.arima$residuals)
+
+Box.test(mod.arima$residuals,lag = 4, fitdf = 3, type = "Lj") 
+
+ventas.pred.arima <- forecast(mod.arima)
+```
+
+# Modelos individuales
+
+```{r include = FALSE}
+read.csv("apple.csv", header = TRUE, sep = ";") -> datos
+as.Date(datos$Time, "%d/%m/%Y") -> datos$Time
+
+datos.iphone <- na.omit(datos[, c(1,2)])
+datos.ipad <- na.omit(datos[, c(1,3)])
+datos.ipod <- na.omit(datos[, c(1,4)])
+datos.mac <- datos[, c(1,5)]
+```
+
+## Modelos ETS
+
+#### Ventas iPhone
+
+```{r include = FALSE}
+library(zoo)
+library(xts)
+library(ggplot2)
+datos.iphone.xts <- to.quarterly(xts(datos.iphone$iPhone, order.by = datos.iphone$Time, frequency = 4))
+
+datos.iphone.zoo <- as.zoo(datos.iphone.xts$`xts(datos.iphone$iPhone, order.by = datos.iphone$Time, frequency = 4).Open`)
+names(datos.iphone.zoo) <- "Ventas iPhone" 
+
+autoplot(datos.iphone.zoo) + ggtitle("Ventas Trimestrales iPhone") + 
+  xlab("Trimestres") + ylab("Ventas")
+
+observaciones.iphone <- length(datos.iphone.zoo)
+muestra.pred.iphone <- window(datos.iphone.zoo, start = index(datos.iphone.zoo[1]), end = index(datos.iphone.zoo[observaciones.iphone - periodos.omit]))
+```
+
+En este caso, y al contrario que en el agregado, el modelo que mejor ajusta que no amortigua la estacionalidad, a pesar de que esta existe. El modelo sigue los mismo parámetros (multiplicativo en error y estacionalidad y aditivo en tendencia) Además, en este caso las ventas son subestimadas en el período predicho, aunque la evolución sea casi calcada. 
+
+```{r}
+mod.ets.iphone <- ets(muestra.pred.iphone) # Creación
+ventas.pred.ets.iphone <- forecast(mod.ets.iphone) # Predicción
+
+summary(ventas.pred.ets.iphone)
+
+plot(ventas.pred.ets.iphone)
+lines(window(datos.iphone.zoo),type = "o")
+```
+
+#### Ventas iPad
+
+```{r include = FALSE}
+datos.ipad.xts <- to.quarterly(xts(datos.ipad$iPad, order.by = datos.ipad$Time, frequency = 4))
+
+datos.ipad.zoo <- as.zoo(datos.ipad.xts$`xts(datos.ipad$iPad, order.by = datos.ipad$Time, frequency = 4).Open`)
+names(datos.ipad.zoo) <- "Ventas iPad" 
+
+autoplot(datos.ipad.zoo) + ggtitle("Ventas Trimestrales iPad") + 
+  xlab("Trimestres") + ylab("Ventas")
+
+observaciones.ipad <- length(datos.ipad.zoo)
+muestra.pred.ipad <- window(datos.ipad.zoo, start = index(datos.ipad.zoo[1]), end = index(datos.ipad.zoo[observaciones.ipad - periodos.omit]))
+```
+
+En este caso, con el iPad ocurre algo similar a lo que pasa con el iPhone. El modelo subestima las ventas, pero en este caso sí amortigua la tendencia (conviertiéndola en aditiva). El error es mucho más grande, provocado por el cambio ocurrido en los últimos años donde había un único pico y los otros tres meses caían.
+```{r}
+mod.ets.ipad <- ets(muestra.pred.ipad, damped = TRUE) # Creación
+ventas.pred.ets.ipad <- forecast(mod.ets.ipad) # Predicción
+
+summary(ventas.pred.ets.ipad)
+
+plot(ventas.pred.ets.ipad)
+lines(window(datos.ipad.zoo),type = "o")
+```
+
+#### Ventas iPod
+
+```{r include = FALSE}
+datos.ipod.xts <- to.quarterly(xts(datos.ipod$iPod, order.by = datos.ipod$Time, frequency = 4))
+
+datos.ipod.zoo <- as.zoo(datos.ipod.xts$`xts(datos.ipod$iPod, order.by = datos.ipod$Time, frequency = 4).Open`)
+names(datos.ipod.zoo) <- "Ventas iPod" 
+
+autoplot(datos.ipod.zoo) + ggtitle("Ventas Trimestrales iPod") + 
+  xlab("Trimestres") + ylab("Ventas")
+
+observaciones.ipod <- length(datos.ipod.zoo)
+muestra.pred.ipod <- window(datos.ipod.zoo, start = index(datos.ipod.zoo[1]), end = index(datos.ipod.zoo[observaciones.ipod - periodos.omit]))
+```
+
+El iPod es el producto que menos variación ha tenido a lo largo de su vida, y con una clara estacionalidad. El modelo ajusta bastante bien la evolución (aunque algo por encima) usando los mismos componentes que el iPad
+```{r}
+mod.ets.ipod <- ets(muestra.pred.ipod, damped = TRUE) # Creación
+ventas.pred.ets.ipod <- forecast(mod.ets.ipod) # Predicción
+
+summary(ventas.pred.ets.ipod)
+
+plot(ventas.pred.ets.ipod)
+lines(window(datos.ipod.zoo),type = "o")
+```
+
+#### Mac
+
+```{r include = FALSE}
+datos.mac.xts <- to.quarterly(xts(datos.mac$Mac, order.by = datos.mac$Time, frequency = 4))
+
+datos.mac.zoo <- as.zoo(datos.mac.xts$`xts(datos.mac$Mac, order.by = datos.mac$Time, frequency = 4).Open`)
+names(datos.mac.zoo) <- "Ventas Mac" 
+
+autoplot(datos.mac.zoo) + ggtitle("Ventas Trimestrales Mac") + 
+  xlab("Trimestres") + ylab("Ventas")
+
+observaciones.mac <- length(datos.mac.zoo)
+muestra.pred.mac <- window(datos.mac.zoo, start = index(datos.mac.zoo[1]), end = index(datos.mac.zoo[observaciones.mac - periodos.omit]))
+```
+
+Aunque la evolución es bastante similar, el modelo no predice la gran caída causada en último año, ya que vuelve a predecir (aproximadamente) la misma cantidad que el año pasado. En cuanto a los componentes sigue el mismo patrón que los otros productos.
+
+```{r}
+mod.ets.mac <- ets(muestra.pred.mac, damped = TRUE) # Creación
+ventas.pred.ets.mac <- forecast(mod.ets.mac) # Predicción
+
+summary(ventas.pred.ets.mac)
+
+plot(ventas.pred.ets.mac)
+lines(window(datos.mac.zoo),type = "o")
+```
+
+## Modelos ARIMA
+
+#### iPhone
+En el caso del modelo ARIMA para el iPhone, este sigue un (0, 1, 2) (1, 0, 0) [4], lo que quiere decir que la variación depende 2 errores pasados y que el error depende de la evolución del año pasado (4 períodos). En cuanto a la hipótesis de ruido blanco, ocurre lo mismo que en el agregado de Apple.
+
+```{r}
+mod.arima.iphone <- auto.arima(muestra.pred.iphone, lambda = 0)
+summary(mod.arima.iphone)
+ggtsdisplay(mod.arima.iphone$residuals)
+Box.test(mod.arima.iphone$residuals,lag = 4, fitdf = 3, type = "Lj") # No ruido blanco (p-value 0.009)
+
+ventas.pred.arima.iphone <- forecast(mod.arima.iphone)
+```
+
+#### iPad
+
+Este ARIMA no depende de nada (0,1,0)(0,1,0)[4] únicamente del período de diferenciación necesario para convertir a la serie en estacionaria. En el gráfico de residuos se ve con na mayor claridad la posibilidad de que los residuos tengan información, hipótesis que se cumple con el test de Box-Jenkins.
+
+```{r}
+mod.arima.ipad <- auto.arima(muestra.pred.ipad, lambda = 0)
+summary(mod.arima.ipad)
+ggtsdisplay(mod.arima.ipad$residuals)
+
+Box.test(mod.arima.ipad$residuals,lag = 4, fitdf = 3, type = "Lj") # No ruido blanco (p-value 0.00002)
+
+ventas.pred.arima.ipad <- forecast(mod.arima.ipad)
+```
+
+#### iPod
+
+En este caso, sí se cumple la hipótesis de ruido blanco, tanto al verla en el gráfico como en el test de Box-Jenkins. Por el lado de la interpretación del modelo, dice que tanto la evolución de las ventas como los errores dependen del error 3 veces anterior (en la evolución) y el del año pasado en los errores
+```{r}
+mod.arima.ipod <- auto.arima(muestra.pred.ipod, lambda = 0)
+summary(mod.arima.ipod)
+ggtsdisplay(mod.arima.ipod$residuals)
+
+Box.test(mod.arima.ipod$residuals,lag = 4, fitdf = 3, type = "Lj") # Ruido blanco (p-value 0.35)
+
+ventas.pred.arima.ipod <- forecast(mod.arima.ipod)
+```
+
+#### Mac
+
+En el caso del Mac, el modelo ARIMA muestra como la evolución depende del error del período pasado, y el error de la evolución y el error cometido el año pasado. En este caso, los residuos son ruido blanco de una manera clara.
+```{r}
+mod.arima.mac <- auto.arima(muestra.pred.mac, lambda = 0)
+summary(mod.arima.mac)
+ggtsdisplay(mod.arima.mac$residuals)
+
+Box.test(mod.arima.mac$residuals,lag = 4, fitdf = 3, type = "Lj") # Ruido blanco (p-value 0.31)
+
+ventas.pred.arima.mac <- forecast(mod.arima.mac)
+```
+
+# Conclusiones
+
+Para acabar, se crearán unas tablas para comparar los distintos modelos y medir su error en la predicción.
+
+```{r}
+#Se crean las variables de predicción 
+ventas.pred.ets.iphone$mean[1:periodos.omit] -> prediccion.ets.iphone
+ventas.pred.arima.iphone$mean[1:7] -> prediccion.arima.iphone
+datos.iphone.zoo[(observaciones.iphone - periodos.omit + 1):observaciones.iphone] -> realidad.iphone
+
+#Se crea el data frame y se cambian los nombres
+comparacion.iphone <- data.frame(matrix(c(prediccion.arima.iphone, prediccion.ets.iphone, realidad.iphone), ncol = 3))
+names(comparacion.iphone) <- c("Modelo ARIMA", "Modelo ETS", "Observación Real")
+
+
+#Se crean las variables
+ventas.pred.ets.ipad$mean[1:periodos.omit] -> prediccion.ets.ipad
+ventas.pred.arima.ipad$mean[1:7] -> prediccion.arima.ipad
+datos.ipad.zoo[(observaciones.ipad - periodos.omit + 1):observaciones.ipad] -> realidad.ipad
+
+#Se crea el data frame y los nombres
+comparacion.ipad <- data.frame(matrix(c(prediccion.arima.ipad, prediccion.ets.ipad, realidad.ipad), ncol = 3))
+names(comparacion.ipad) <- c("Modelo ARIMA", "Modelo ETS", "Observación Real")
+
+
+#Se crean las variables
+ventas.pred.ets.ipod$mean[1:periodos.omit] -> prediccion.ets.ipod
+ventas.pred.arima.ipod$mean[1:7] -> prediccion.arima.ipod
+datos.ipod.zoo[(observaciones.ipod - periodos.omit + 1):observaciones.ipod] -> realidad.ipod
+
+#Se crea el data frame y los nombres
+comparacion.ipod <- data.frame(matrix(c(prediccion.arima.ipod, prediccion.ets.ipod, realidad.ipod), ncol = 3))
+names(comparacion.ipod) <- c("Modelo ARIMA", "Modelo ETS", "Observación Real")
+
+
+#Se crean las variables
+ventas.pred.ets.mac$mean[1:periodos.omit] -> prediccion.ets.mac
+ventas.pred.arima.mac$mean[1:7] -> prediccion.arima.mac
+datos.mac.zoo[(observaciones.mac - periodos.omit + 1):observaciones.mac] -> realidad.mac
+
+#Se crea el data frame y los nombres
+comparacion.mac <- data.frame(matrix(c(prediccion.arima.mac, prediccion.ets.mac, realidad.mac), ncol = 3))
+names(comparacion.mac) <- c("Modelo ARIMA", "Modelo ETS", "Observación Real")
+
+
+#Se crean las variables
+ventas.pred.ets$mean[1:periodos.omit] -> prediccion.ets.global
+ventas.pred.arima$mean[1:7] -> prediccion.arima.global
+datos.zoo[(observaciones - periodos.omit + 1):observaciones] -> realidad.global
+
+#Se crea el data frame y los nombres
+comparacion.global <- data.frame(matrix(c(prediccion.arima.global, prediccion.ets.global, realidad.global), ncol = 3))
+names(comparacion.global) <- c("Modelo ARIMA", "Modelo ETS", "Observación Real")
+```
+
+```{r}
+comparacion.global
+comparacion.ipad
+comparacion.iphone
+comparacion.ipod
+comparacion.mac
+```
+
+Para acabar el informe, se compararán las tres cifras: la real de las ventas, la predicha por los modelos ARIMA y la predicha por los modelos ETS.
+
++ En cuanto al modelo agregado, el menor error lo da el modelo ARIMA
+
+```{r}
+mean(comparacion.global$`Modelo ARIMA` - comparacion.global$`Observación Real`)
+mean(comparacion.global$`Modelo ETS` - comparacion.global$`Observación Real`)
+```
+
++ En cuanto a las ventas de iPad, el menor error lo da el modelo ETS
+ 
+```{r}
+mean(comparacion.ipad$`Modelo ARIMA` - comparacion.ipad$`Observación Real`)
+mean(comparacion.ipad$`Modelo ETS` - comparacion.ipad$`Observación Real`)
+```
+
++ En cuanto a las ventas de iPhone, el menor error lo da el ARIMA
+ 
+```{r}
+mean(comparacion.iphone$`Modelo ARIMA` - comparacion.iphone$`Observación Real`)
+mean(comparacion.iphone$`Modelo ETS` - comparacion.iphone$`Observación Real`)
+```
+
++ En cuanto a las ventas de iPod, el menor error lo da el ETS
+ 
+```{r}
+mean(comparacion.ipod$`Modelo ARIMA` - comparacion.ipod$`Observación Real`)
+mean(comparacion.ipod$`Modelo ETS` - comparacion.ipod$`Observación Real`)
+```
+
++ En cuanto a las ventas de Mac, el menor error lo da el ETS
+ 
+```{r}
+mean(comparacion.mac$`Modelo ARIMA` - comparacion.mac$`Observación Real`)
+mean(comparacion.mac$`Modelo ETS` - comparacion.mac$`Observación Real`)
+```
