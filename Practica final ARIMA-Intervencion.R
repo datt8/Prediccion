@@ -70,7 +70,7 @@ arima.modelo.crest <- auto.arima(muestra.pred.crest, lambda = 0)
 summary(arima.modelo.crest) # El modelo resultante es una ARIMA(0,1,1) (sin componente estacional)
 ggtsdisplay(arima.modelo.crest$residuals) # Si está entre las líneas azules (los residuos son irrelevantes -> ruido blanco)
 Box.test(arima.modelo.crest$residuals, lag = 3, fitdf = 1, type = "Lj") # Se confirma el ruido blanco. Las referencias muestran que el fitdf óptimo es p+q
-modelo.arima.prediccion.crest <- forecast(arima.modelo.crest, h = 16)
+modelo.arima.prediccion.crest <- forecast(arima.modelo.crest, h = 16) # Se pone el parámetro h, para que prediga 16 períodos
 
 ## Predicción del ARIMA Colgate
 
@@ -78,22 +78,26 @@ arima.modelo.colgate <- auto.arima(muestra.pred.colgate, lambda = 0)
 summary(arima.modelo.colgate) # El modelo resultante es una ARIMA(0,1,1) (sin componente estacional)
 ggtsdisplay(arima.modelo.colgate$residuals) # Los residuos son irrelevantes -> ruido blanco
 Box.test(arima.modelo.colgate$residuals, lag = 4, fitdf = 1, type = "Lj") # Se confirma el ruido blanco
-modelo.arima.prediccion.colgate <- forecast(arima.modelo.colgate)
+modelo.arima.prediccion.colgate <- forecast(arima.modelo.colgate, h = 16) # Misma razón de antes
 
 ## Comparación de la realidad vs. Crest y Colgate
 
 arima.crest <- modelo.arima.prediccion.crest$mean # Esta es la predicción que da el modelo
 real.crest <- data.crest.zoo[(observ.muestra.crest - periodos.omitidos + 1):observ.muestra.crest] # La observación real
-comparacion.crest <- data.frame(matrix(c(arima.crest, real.crest))) # Se une en una data frame
+comparacion.crest <- data.frame(matrix(c(arima.crest, real.crest), ncol = 2)) # Se une en una data frame
 names(comparacion.crest) <- c("ARIMA", "Real") # Se cambian los nombres de las columnas
 
 arima.colgate <- modelo.arima.prediccion.colgate$mean # Predicción del modelo
 real.colgate <- data.colgate.zoo[(observ.muestra.colgate - periodos.omitidos + 1):observ.muestra.colgate] # Observación real de la marca
-comparacion.colgate <- data.frame(matrix(c(arima.colgate, real.colgate))) # Dataframe con la observación predicha y la real
-names(comparacion.colgate) <- c("ARIMA", "Real") # Se cambian los nombres
+comparacion.colgate <- data.frame(matrix(c(arima.colgate, real.colgate), ncol = 2)) # Dataframe con la observación predicha y la real
+comparacion.colgate$Fecha <- data$Fecha[261:276]
+names(comparacion.colgate) <- c("ARIMA", "Real", "Fecha") # Se cambian los nombres
 
 ## Gráficos de ambas para ver la predicción
 
+ggplot(data = comparacion.colgate, aes(x = Fecha)) + 
+  geom_line(mapping = aes(y = ARIMA), col = "red") + 
+  geom_line(mapping = aes(y = Real), col = "blue", alpha = 0.4)
 # Detección atípicos
 
 library(TSA)
@@ -108,3 +112,10 @@ detectIO(arima.modelo.colgate) # Atípico en semana 102
 
 arima.modelo.crest2 <- arimax(muestra.pred.crest, order = c(0,1,1), io = c(99)) # Corrige el innovativo de Crest
 detectIO(arima.modelo.crest2) # Ya no hay atípico innovativo
+
+arima.modelo
+
+
+
+
+
