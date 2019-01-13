@@ -1,9 +1,8 @@
 
 # Carga del dataset y primeros retoques
-library(readxl)
-
-data <- data.frame(read_xlsx("CuotaMercado.xlsx")) # Lectura del archivo
-as.Date(data$Fecha, "%Y/%m/%d") -> data$Fecha # Transformación a formato fecha
+data <- data.frame(read.csv("Datos/CuotaMercado.csv", sep = ",")) # Lectura del archivo
+as.Date(data$Fecha, "%d/%m/%Y") -> data$Fecha # Transformación a formato fecha
+data[,c(1,2)] <- NULL
 str(data) # Ya se tienen las variables en su formato correcto
 
 # Pasar los datos a formato serie temporal (xts y zoo)
@@ -26,9 +25,13 @@ names(data.colgate.zoo) <- "Cuota Colgate"
 library(ggplot2)
 library(ggfortify)
 
-autoplot(data.crest.zoo) + ggtitle("Cuota mercado Crest") + xlab("Años") + ylab("Cuota")
+ggplot(data, aes(x = Fecha)) + 
+  geom_line(aes(y = Crest), col = "red", alpha = 0.5) + 
+  geom_line(aes(y = Colgate), col = "blue", alpha = 0.5) +
+  xlab("Fecha") +
+  ylab("Cuota (en tanto por uno)") +
+  geom_vline(mapping = aes(xintercept = as.Date("1960-08-01")), col = "black", alpha = 0.25)
 
-autoplot(data.colgate.zoo) + ggtitle("Cuota mercado Colgate") + xlab("Años") + ylab("Cuota")
 
 # En ambos gráficos se puede observar el aumento de la cuota de Crest y disminución del Colgate
 # pero no se observa una clara presencia de estacionalidad, sino las subidas/bajadas propias de unas ventas
@@ -66,11 +69,13 @@ ggtsdisplay(diff(colgate.log)) # Parece que como en el caso anterior, será nece
 
 ## Predicción del ARIMA Crest
 
-arima.modelo.crest <- auto.arima(muestra.pred.crest, lambda = 0)
+arima.modelo.crest <- auto.arima(muestra.pred.crest, lambda = 0) # Con ese lambda se aplica el logaritmo
 summary(arima.modelo.crest) # El modelo resultante es una ARIMA(0,1,1) (sin componente estacional)
 ggtsdisplay(arima.modelo.crest$residuals) # Si está entre las líneas azules (los residuos son irrelevantes -> ruido blanco)
 Box.test(arima.modelo.crest$residuals, lag = 3, fitdf = 1, type = "Lj") # Se confirma el ruido blanco. Las referencias muestran que el fitdf óptimo es p+q
+
 modelo.arima.prediccion.crest <- forecast(arima.modelo.crest, h = 16) # Se pone el parámetro h, para que prediga 16 períodos
+plot(modelo.arima.prediccion.crest)
 
 ## Predicción del ARIMA Colgate
 
@@ -78,7 +83,32 @@ arima.modelo.colgate <- auto.arima(muestra.pred.colgate, lambda = 0)
 summary(arima.modelo.colgate) # El modelo resultante es una ARIMA(0,1,1) (sin componente estacional)
 ggtsdisplay(arima.modelo.colgate$residuals) # Los residuos son irrelevantes -> ruido blanco
 Box.test(arima.modelo.colgate$residuals, lag = 4, fitdf = 1, type = "Lj") # Se confirma el ruido blanco
+
 modelo.arima.prediccion.colgate <- forecast(arima.modelo.colgate, h = 16) # Misma razón de antes
+plot(modelo.arima.prediccion.colgate)
+
+## Intentando ver por qué predicción plana
+
+data.crest <- data[,c(1,3)]
+data.crest$var <- NA
+for (i in 1:nrow(data.crest)) {
+  data.crest$var[1] <- 0
+  data.crest$var[i + 1] <- (log(data.crest$Crest[i + 1]/data.crest$Crest[i]))*100
+}
+mean(data.crest$var) # Variación semanal enorme 0,45% de media 
+sd(data.crest$var) # Desviación típica de 26,3% 
+# En un 95% de posibilidades la variación estará entre -52,15% y 53,05%
+
+data.colgate <- data[,c(2,3)]
+data.colgate$var <- NA
+for (i in 1:nrow(data.colgate)) {
+  data.colgate$var[1] <- 0
+  data.colgate$var[i + 1] <- (log(data.colgate$Colgate[i + 1]/data.colgate$Colgate[i]))*100
+}
+mean(data.colgate$var) # Variación semanal -0,32% de media 
+sd(data.colgate$var) # Desviación típica de 19,8% 
+# En un 95% de posibilidades la variación estará entre -39,92% y 39,28%
+
 
 ## Comparación de la realidad vs. Crest y Colgate
 
@@ -90,14 +120,8 @@ names(comparacion.crest) <- c("ARIMA", "Real") # Se cambian los nombres de las c
 arima.colgate <- modelo.arima.prediccion.colgate$mean # Predicción del modelo
 real.colgate <- data.colgate.zoo[(observ.muestra.colgate - periodos.omitidos + 1):observ.muestra.colgate] # Observación real de la marca
 comparacion.colgate <- data.frame(matrix(c(arima.colgate, real.colgate), ncol = 2)) # Dataframe con la observación predicha y la real
-comparacion.colgate$Fecha <- data$Fecha[261:276]
-names(comparacion.colgate) <- c("ARIMA", "Real", "Fecha") # Se cambian los nombres
+names(comparacion.colgate) <- c("ARIMA", "Real") # Se cambian los nombres
 
-## Gráficos de ambas para ver la predicción
-
-ggplot(data = comparacion.colgate, aes(x = Fecha)) + 
-  geom_line(mapping = aes(y = ARIMA), col = "red") + 
-  geom_line(mapping = aes(y = Real), col = "blue", alpha = 0.4)
 # Detección atípicos
 
 library(TSA)
@@ -113,9 +137,8 @@ detectIO(arima.modelo.colgate) # Atípico en semana 102
 arima.modelo.crest2 <- arimax(muestra.pred.crest, order = c(0,1,1), io = c(99)) # Corrige el innovativo de Crest
 detectIO(arima.modelo.crest2) # Ya no hay atípico innovativo
 
-arima.modelo
-
-
+arima.modelo.colgate2 <- arimax(muestra.pred.colgate, order = c(0,1,1), io = c(102)) # Corrige dichi atípico
+detectIO(arima.modelo.colgate2) # Atípico eliminado
 
 
 
