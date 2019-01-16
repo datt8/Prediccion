@@ -1,4 +1,3 @@
-
 # Carga del dataset y primeros retoques
 data <- data.frame(read.csv("Datos/CuotaMercado.csv", sep = ",")) # Lectura del archivo
 as.Date(data$Fecha, "%d/%m/%Y") -> data$Fecha # Transformación a formato fecha
@@ -6,6 +5,7 @@ data[,c(1,2)] <- NULL
 str(data) # Ya se tienen las variables en su formato correcto
 
 # Pasar los datos a formato serie temporal (xts y zoo)
+
 library(zoo)
 library(xts)
 
@@ -17,30 +17,38 @@ data.colgate.xts <- xts(data$Colgate, order.by = data$Fecha)
 data.colgate.zoo <- as.zoo(data.colgate.xts)
 names(data.colgate.zoo) <- "Cuota Colgate"
 
-# Se cambian los nombres por estética.
+## Se cambian los nombres por estética.
 
 # Análisis exploratorio
 
-# Primera aproximación gráfica para detectar estacionalidad (principalmente) en la evolución
+## Primera aproximación gráfica para detectar estacionalidad (principalmente) en la evolución
+
 library(ggplot2)
 library(ggfortify)
 
-ggplot(data, aes(x = Fecha)) + 
-  geom_line(aes(y = Crest), col = "red", alpha = 0.5) + 
-  geom_line(aes(y = Colgate), col = "blue", alpha = 0.5) +
+ggplot(data, aes(x = Fecha), show.legend = TRUE) + 
+  geom_line(aes(y = Crest), col = "red", alpha = 0.5, show.legend = TRUE) + 
+  geom_line(aes(y = Colgate), col = "blue", alpha = 0.5, show.legend = TRUE) +
   xlab("Fecha") +
   ylab("Cuota (en tanto por uno)") +
-  geom_vline(mapping = aes(xintercept = as.Date("1960-08-01")), col = "black", alpha = 0.25)
+  geom_vline(mapping = aes(xintercept = as.Date("1960-08-01")), col = "black", alpha = 0.25) +
+  legend(Fecha)
 
+ggsave("EvolucionCuota.png")
 
-# En ambos gráficos se puede observar el aumento de la cuota de Crest y disminución del Colgate
-# pero no se observa una clara presencia de estacionalidad, sino las subidas/bajadas propias de unas ventas
+# En el gráfico se puede observar el aumento de la cuota de Crest y disminución del Colgate a partir de la decisión de la ADA (línea negra)
+# No se observa una clara presencia de estacionalidad, sino las subidas/bajadas propias de unas ventas
 
 hist(data$Crest, col = "red", xlab = "Cuota de mercado", ylab = "", 
      main = "Distribución de la cuota de mercado de Crest") # Presencia de binormal
 hist(data$Colgate, col = "blue", xlab = "Cuota de mercado", ylab = "",
      main = "Distribución de la cuota de mercado de Colgate") # Sigue una distribución normal (CLARÍSIMA)
 cor(data$Crest, data$Colgate) # Gran relación (negativa) entre ambas variables 
+
+momentos.crest.antes <- c(mean(data$Crest[1:136]), sd(data$Crest[1:136]))
+momentos.crest.despues <- c(mean(data$Crest[137:276]), sd(data$Crest[137:276]))
+momentos.colgate.antes <- c(mean(data$Colgate[1:136]), sd(data$Colgate[1:136]))
+momentos.colgate.despues <- c(mean(data$Colgate[137:276]), sd(data$Colgate[137:276]))
 
 # Creación muestras
 
@@ -75,7 +83,7 @@ ggtsdisplay(arima.modelo.crest$residuals) # Si está entre las líneas azules (l
 Box.test(arima.modelo.crest$residuals, lag = 3, fitdf = 1, type = "Lj") # Se confirma el ruido blanco. Las referencias muestran que el fitdf óptimo es p+q
 
 modelo.arima.prediccion.crest <- forecast(arima.modelo.crest, h = 16) # Se pone el parámetro h, para que prediga 16 períodos
-plot(modelo.arima.prediccion.crest)
+plot(modelo.arima.prediccion.crest, main = "Predicción ARIMA Crest")
 
 ## Predicción del ARIMA Colgate
 
@@ -85,7 +93,7 @@ ggtsdisplay(arima.modelo.colgate$residuals) # Los residuos son irrelevantes -> r
 Box.test(arima.modelo.colgate$residuals, lag = 4, fitdf = 1, type = "Lj") # Se confirma el ruido blanco
 
 modelo.arima.prediccion.colgate <- forecast(arima.modelo.colgate, h = 16) # Misma razón de antes
-plot(modelo.arima.prediccion.colgate)
+plot(modelo.arima.prediccion.colgate, main = "Predicción ARIMA Colgate")
 
 ## Intentando ver por qué predicción plana
 
@@ -132,13 +140,19 @@ detectIO(arima.modelo.crest) # Atípico en semana 99
 detectIO(arima.modelo.colgate) # Atípico en semana 102
 # Puede ser que ambos estén afectados por expropiaciones cubanas
 
-## Corrección atípicos
+# Modelo de intervención (se corrigen tanto el atípico innovativo como aditivo). Se prueban tanto escalon como impulso
 
-arima.modelo.crest2 <- arimax(muestra.pred.crest, order = c(0,1,1), io = c(99)) # Corrige el innovativo de Crest
-detectIO(arima.modelo.crest2) # Ya no hay atípico innovativo
+mod.intervencion.crest <- arimax(x = crest.log, order = c(0,1,1), # Modelo ARIMA
+                                 xtransf = data.frame(Aug60_step = 1*(seq(crest.log) > 135), # Variable escalón
+                                                      Aug60_pulse = 1*(seq(crest.log) == 135)), # Variable impulso
+                                 xreg = data.frame(Aug60_sem2 = 1*seq(crest.log == 136)), # Atípico aditivo
+                                 io = c(99), # Atípico innovativo
+                                 transfer = list(c(0,0), c(1,0)), # Función de transferencia
+                                 method = "ML") # Método
 
-arima.modelo.colgate2 <- arimax(muestra.pred.colgate, order = c(0,1,1), io = c(102)) # Corrige dichi atípico
-detectIO(arima.modelo.colgate2) # Atípico eliminado
-
-
-
+mod.intervencion.colgate <- arimax(x = colgate.log, order = c(0,1,1),
+                                   xtransf = data.frame(Aug60_step = 1*(seq(colgate.log) > 135),
+                                                        Aug60_pulse = 1*(seq(colgate.log) == 135)),
+                                   io = c(102),
+                                   transfer = list(c(0,0), c(1,0)),
+                                   method = "ML")
