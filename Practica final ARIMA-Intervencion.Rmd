@@ -1,0 +1,238 @@
+---
+title: "Predicción cuota mercado Colgate vs. Crest"
+author: "Daniel Tomé Gordo"
+date: "18 de enero de 2019"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+    number_sections: true
+    toc: true
+subtitle: "Máster en Data Science para Finanzas CUNEF"
+---
+Tras una primera modificación del dataset para introducir una columna con una fecha exacta, se procede a la carga de los datos y a la transformación de la variable Fecha del dataset original en una variable de tipo fecha. Posteriormente se eliminan, las dos primeras columnas referidas al año y la semana, pues ahora ya son inútiles. Finalmente se comprueba si la estructura de los datos es la correcta (númerico para las cuotas y fecha para la variable Fecha)
+```{r}
+data <- data.frame(read.csv("Datos/CuotaMercado.csv", sep = ",")) 
+as.Date(data$Fecha, "%d/%m/%Y") -> data$Fecha 
+data[,c(1,2)] <- NULL
+str(data) 
+
+```
+
+Se realiza la el cambio a objetos de serie temporal para ambas empresas y se renombran por puro motivo estético
+```{r}
+library(zoo)
+library(xts)
+
+data.crest.xts <- xts(data$Crest, order.by = data$Fecha)
+data.crest.zoo <- as.zoo(data.crest.xts)
+names(data.crest.zoo) <- "Cuota Crest"
+
+data.colgate.xts <- xts(data$Colgate, order.by = data$Fecha)
+data.colgate.zoo <- as.zoo(data.colgate.xts)
+names(data.colgate.zoo) <- "Cuota Colgate"
+```
+
+## Análisis exploratorio 
+
+Se realiza un primer gráfico de ambas cuotas para poder aproximarse al caso. En él se ve un gran cambio con la decisión de la ADA (línea negra). No se observa una gran estacionalidad ni una tendencia definida en ninguna de las dos empresas. A largo plazo sí, pero agravada por la intervencion de la ADA. También se observa una volatilidad elevada en ambos casos 
+```{r}
+library(ggplot2)
+library(ggfortify)
+
+data.grafico <- cbind(data.colgate.xts, data.crest.xts)
+names(data.grafico) <- c("Colgate", "Crest")
+autoplot(data.grafico, facets = FALSE) +
+  ggtitle("Cuota de Mercado Crest y Colgate") +
+  xlab("Tiempo") +
+  ylab("Cuota de Mercado") +
+  geom_vline(xintercept = as.Date("1960-08-01"), col = "black", alpha = 0.25)
+  
+ggsave("EvolucionCuota.png")
+```
+
+En los histogramas se puede ver la distribución de las cuotas y como en Crest se prevé la presencia de dos binormales (una pre-intervención y otras post-intervención) y una normal (bastante definida) en el caso de Colgate. En cuanto a la correlación, existe de manera lineal, en gran medida y de forma negativa (como se esperaba debido al mercado dental y el uso "normal" de una marca por individuo).
+
+```{r}
+hist(data$Crest, col = "red", xlab = "Cuota de mercado", ylab = "", 
+     main = "Distribución de la cuota de mercado de Crest") 
+hist(data$Colgate, col = "blue", xlab = "Cuota de mercado", ylab = "",
+     main = "Distribución de la cuota de mercado de Colgate")  
+cor(data$Crest, data$Colgate)  
+```
+
+Se crean estos estadísticos para reafirmar lo anterior y comprobar la evolución pre-post intervención.
+
+```{r}
+momentos.crest.antes <- c(mean(data$Crest[1:136]), sd(data$Crest[1:136]))
+momentos.crest.despues <- c(mean(data$Crest[137:276]), sd(data$Crest[137:276]))
+momentos.colgate.antes <- c(mean(data$Colgate[1:136]), sd(data$Colgate[1:136]))
+momentos.colgate.despues <- c(mean(data$Colgate[137:276]), sd(data$Colgate[137:276]))
+```
+
+Se crean ambas muestras para la posterior predicción del modelo ARIMA y se eliminan de estas muestras las últimas 16 semanas correspondientes al año 1963
+
+```{r}
+periodos.omitidos <- 16 
+observ.muestra.crest <- length(data.crest.zoo)
+muestra.pred.crest <- window(data.crest.zoo, start = index(data.crest.zoo[1]), 
+                             end = index(data.crest.zoo[observ.muestra.crest - periodos.omitidos]))
+
+observ.muestra.colgate <- length(data.colgate.zoo)
+muestra.pred.colgate <- window(data.colgate.zoo, start = index(data.colgate.zoo[1]), 
+                               end = index(data.colgate.zoo[observ.muestra.colgate - periodos.omitidos]))
+
+```
+
+Se transforman la varianza y la media para convertir a la serie en estacionaria para garantizar la buena estimación de la predicción. La varianza se realiza mediante la toma de logaritmos y la media mediante la diferenciación (establecer tantos períodos de retardos como sean necesarios). Se ve una correlación parcial a 3-4 semanas en ambos casos (quizá correlación a un mes)
+
+```{r}
+library(forecast)
+
+crest.log <- log(data.crest.zoo) 
+ggtsdisplay(diff(crest.log)) 
+
+colgate.log <- log(data.colgate.zoo) 
+ggtsdisplay(diff(colgate.log))
+```
+
+## Modelos ARIMA
+
+Se halla el modelo ARIMA de Crest con la muestra creada y estableciendo un lambda = 0 (para aplicar logaritmos). El modelo resultante es un ARIMA(0,1,1) (como el de las líneas aéreas) sin componente estacional (se confirma esto). Una diferenciación, como se vio antes, es necesaria para la estacionariedad de la media y la serie en un período t se ve influenciada por el error del período t-1. También se deben comprobar los residuos, para ver si no introducen información el modelo (como están entre las líneas azules esta se cumple) y se cumple la hipótesis del ruido blanco (media 0, varianza constante y covarianza nula). Por si acaso, se realiza el test de Box-Ljung y se reafirma con un p-value del 0,77.
+Se predicen las 16 semanas restantes y posteriormente se grafica, la predicción es plana. Debido a, probablemente, las continuas variaciones de la compañía.
+```{r}
+arima.modelo.crest <- auto.arima(muestra.pred.crest, lambda = 0) 
+summary(arima.modelo.crest) 
+ggtsdisplay(arima.modelo.crest$residuals) 
+Box.test(arima.modelo.crest$residuals, lag = 3, fitdf = 1, type = "Lj") 
+
+modelo.arima.prediccion.crest <- forecast(arima.modelo.crest, h = 16) 
+autoplot(modelo.arima.prediccion.crest, main = "Predicción ARIMA Crest") +
+  xlab("Fecha") +
+  ylab("Cuota Crest")
+```
+
+Para el caso de Colgate es exactamente lo mismo que en el caso de Crest
+
+```{r}
+arima.modelo.colgate <- auto.arima(muestra.pred.colgate, lambda = 0)
+summary(arima.modelo.colgate) 
+ggtsdisplay(arima.modelo.colgate$residuals) 
+Box.test(arima.modelo.colgate$residuals, lag = 4, fitdf = 1, type = "Lj")
+
+modelo.arima.prediccion.colgate <- forecast(arima.modelo.colgate, h = 16) 
+autoplot(modelo.arima.prediccion.colgate, main = "Predicción ARIMA Colgate") +
+  xlab("Fecha") +
+  ylab("Cuota Crest")
+```
+
+Se realizará esto para ambas empresas para comprobar la variación de las compañías cpmo se ha afirmado antes. El resultado es claro, una volatilidad extrema en este caso. Intervalo de confianza muy grande al 95% de 100 puntos porcentuales (-52%, 53%)
+```{r}
+data.crest <- data[,c(1,3)]
+data.crest$var <- NA
+for (i in 1:nrow(data.crest)) {
+  data.crest$var[1] <- 0
+  data.crest$var[i + 1] <- (log(data.crest$Crest[i + 1]/data.crest$Crest[i]))*100
+}
+mean(data.crest$var) 
+sd(data.crest$var)
+```
+
+En este caso el intervalo es menor, pero sigue siendo muy grande (-40%, 40%)
+
+```{r}
+data.colgate <- data[,c(2,3)]
+data.colgate$var <- NA
+for (i in 1:nrow(data.colgate)) {
+  data.colgate$var[1] <- 0
+  data.colgate$var[i + 1] <- (log(data.colgate$Colgate[i + 1]/data.colgate$Colgate[i]))*100
+}
+mean(data.colgate$var) 
+sd(data.colgate$var)
+```
+
+Se crean dos tablas, una por marca, para ver la comparación entre la realidad y la predicción. Obviamente existen grandes diferencias por la, prediccion plana que ha resultado de los ARIMA
+
+```{r}
+arima.crest <- modelo.arima.prediccion.crest$mean 
+real.crest <- data.crest.zoo[(observ.muestra.crest - periodos.omitidos + 1):observ.muestra.crest]
+comparacion.crest <- data.frame(matrix(c(arima.crest, real.crest), ncol = 2)) 
+names(comparacion.crest) <- c("ARIMA", "Real") 
+
+arima.colgate <- modelo.arima.prediccion.colgate$mean 
+real.colgate <- data.colgate.zoo[(observ.muestra.colgate - periodos.omitidos + 1):observ.muestra.colgate] 
+comparacion.colgate <- data.frame(matrix(c(arima.colgate, real.colgate), ncol = 2)) 
+names(comparacion.colgate) <- c("ARIMA", "Real") 
+
+```
+
+Se detectan atípicos aditivos (que afectan a la serie temporal) e innovativos (que afectan al error de la serie). En el caso de Crest se detecta un aditivo la semana posterior a la decisión de la ADA, y un innovativo a finales del año 1959 (semana 99). Quizá provocada por las expropiaciones realiazadas por el Gobierno cubano con la entrada de Fidel Castro en el poder. En Colgate ocurre lo mismo en el lado innovativo, porque aditivo no existe. El atípico se presenta en la semana 102 y puede estar provocada por lo mismo (Cuba).
+Sin embargo, se presentan muchas dudas pues ante esto se espera un efecto "más largo" pues apenas dura 1 semana. Luego ambas cuotas se recuperan
+
+```{r}
+library(TSA)
+detectAO(arima.modelo.crest) 
+detectAO(arima.modelo.colgate) 
+
+detectIO(arima.modelo.crest) 
+detectIO(arima.modelo.colgate)
+```
+
+## Modelo intervención
+
+Siendo obvio por lo visto antes que la ADA influyó se busca ver como influyó si mediante un impulso (transitorio) o un escalón (permanente). Además se incluyen los anómalos aditivos (en xreg) e innovativos (en io) para ver su significación. En ambos casos, afecta la intervención de la ADA y el atípico innovativo. Se descarta la idea del impulso y se reafirma la idea del escalón
+
+```{r}
+mod.intervencion.crest <- arimax(x = crest.log, order = c(0,1,1), 
+                                  xtransf = data.frame(Aug60_step = 1*(seq(crest.log) > 135),
+                                                       Aug60_pulse = 1*(seq(crest.log) == 135)), 
+                                  xreg = data.frame(Aug60_sem2 = 1*(seq(crest.log) == 136)), 
+                                  io = c(99), 
+                                  transfer = list(c(0,0), c(0,0)), 
+                                  method = "ML") 
+
+mod.intervencion.colgate <- arimax(x = colgate.log, order = c(0,1,1),
+                                   xtransf = data.frame(Aug60_step = 1*(seq(colgate.log) > 135),
+                                                        Aug60_pulse = 1*(seq(colgate.log) == 135)),
+                                   io = c(102),
+                                   transfer = list(c(0,0), c(0,0)),
+                                   method = "ML")
+mod.intervencion.crest
+
+mod.intervencion.colgate
+```
+
+## Función de transferencia
+
+Se estudia el impacto de la decisión de la ADA en Colgate, el orden es el ARIMA de Colgate y el transfer es 0,0 pues el impacto es de impulso y se mantiene en el tiempo. Posteriormente, se comprueba la irrelevancia de los residuos 
+
+```{r}
+mod.transf <- arimax(x = colgate.log,
+                      order = c(0,1,1), 
+                      include.mean = TRUE,
+                      xtransf = crest.log, 
+                      transfer = list(c(0,0)), 
+                      method = "ML")
+mod.transf
+
+tsdisplay(mod.transf$residuals)
+```
+
+## CausalImpact
+
+Se prueba esta librería para ver el impacto de manera gráfica de la decisión de la ADA, además se usa esta librería creada por Google.
+
+```{r}
+library(CausalImpact)
+
+ADA <- as.Date("1960-08-01")
+impacto <- CausalImpact(data.colgate.zoo,
+                       c(min(index(data.colgate.zoo)), ADA - 1),
+                       c(ADA, max(index(data.colgate.zoo)))) 
+plot(impacto, metrics = c("original", "pointwise","cumulative"))
+
+summary(impact, "report") # Da un informe sobre el impacto
+
+```
+
+
